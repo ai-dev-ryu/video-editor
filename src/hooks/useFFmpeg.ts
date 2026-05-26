@@ -6,13 +6,18 @@ import { fetchFile, toBlobURL } from "@ffmpeg/util";
 
 export function useFFmpeg() {
   const ffmpegRef = useRef<FFmpeg | null>(null);
+  const loadedRef = useRef(false);   // state ではなく ref で管理
+  const loadingRef = useRef(false);
+
   const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
   const [log, setLog] = useState("");
 
   const load = useCallback(async () => {
-    if (loaded || loading) return;
+    // ref で判定するので古い closure の値に依存しない
+    if (loadedRef.current || loadingRef.current) return;
+    loadingRef.current = true;
     setLoading(true);
     try {
       const ffmpeg = new FFmpeg();
@@ -31,18 +36,23 @@ export function useFFmpeg() {
         wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, "application/wasm"),
       });
 
+      loadedRef.current = true;
       setLoaded(true);
     } finally {
+      loadingRef.current = false;
       setLoading(false);
     }
-  }, [loaded, loading]);
+  }, []);
 
   const processVideo = useCallback(
     async (
       file: File,
       options: { startTime?: number; endTime?: number; speed?: number }
     ): Promise<Blob> => {
-      if (!ffmpegRef.current || !loaded) throw new Error("FFmpeg not loaded");
+      // state ではなく ref で確認するので常に最新の値を参照できる
+      if (!ffmpegRef.current || !loadedRef.current) {
+        throw new Error("FFmpeg の読み込みが完了していません");
+      }
 
       const ffmpeg = ffmpegRef.current;
       const inputName = "input" + file.name.slice(file.name.lastIndexOf("."));
@@ -64,8 +74,12 @@ export function useFFmpeg() {
 
       if (speed !== 1) {
         const videoFilter = `setpts=${(1 / speed).toFixed(4)}*PTS`;
-        const audioFilter = `atempo=${Math.min(Math.max(speed, 0.5), 2.0).toFixed(4)}`;
-        args.push("-filter_complex", `[0:v]${videoFilter}[v];[0:a]${audioFilter}[a]`);
+        // atempo は 0.5〜2.0 の範囲制限があるため連結で対応
+        const atempoFilters = buildAtempoFilters(speed);
+        args.push(
+          "-filter_complex",
+          `[0:v]${videoFilter}[v];[0:a]${atempoFilters}[a]`
+        );
         args.push("-map", "[v]", "-map", "[a]");
       }
 
@@ -80,8 +94,29 @@ export function useFFmpeg() {
       const buffer = data instanceof Uint8Array ? data.buffer : data;
       return new Blob([buffer as ArrayBuffer], { type: "video/mp4" });
     },
-    [loaded]
+    []
   );
 
   return { load, loaded, loading, progress, log, processVideo };
+}
+
+/** atempo は 0.5〜2.0 の範囲しか受け付けないため、範囲外は複数フィルターを連結する */
+function buildAtempoFilters(speed: number): string {
+  const filters: string[] = [];
+  let remaining = speed;
+
+  if (remaining > 2.0) {
+    while (remaining > 2.0) {
+      filters.push("atempo=2.0");
+      remaining /= 2.0;
+    }
+  } else if (remaining < 0.5) {
+    while (remaining < 0.5) {
+      filters.push("atempo=0.5");
+      remaining /= 0.5;
+    }
+  }
+
+  filters.push(`atempo=${remaining.toFixed(4)}`);
+  return filters.join(",");
 }

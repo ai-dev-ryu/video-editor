@@ -93,9 +93,10 @@ export function VideoEditor() {
   const handleProcess = useCallback(async () => {
     if (!file) return;
     setError("");
+    setProcessing(true);
     try {
-      if (!loaded) await load();
-      setProcessing(true);
+      // FFmpeg がまだロードされていなければここで待機（ref がセットされるまで完了する）
+      await load();
       const blob = await processVideo(file, { startTime, endTime, speed });
       const url = URL.createObjectURL(blob);
       setOutputURL(url);
@@ -104,7 +105,7 @@ export function VideoEditor() {
     } finally {
       setProcessing(false);
     }
-  }, [file, loaded, load, processVideo, startTime, endTime, speed]);
+  }, [file, load, processVideo, startTime, endTime, speed]);
 
   const handleDownload = useCallback(() => {
     if (!outputURL || !file) return;
